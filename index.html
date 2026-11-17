@@ -2385,6 +2385,10 @@
             const sel = document.getElementById('stats-exercise-select');
             const isTotal = !sel || sel.value === TOTAL_KEY;
 
+            const exerciseName = sel?.value || '';
+            const isBodyweightPullUp = /\bpull[\s-]*ups?\b/i.test(exerciseName) &&
+                !/zavorr|weighted/i.test(exerciseName);
+            const unit = isBodyweightPullUp ? 'rip.' : 'kg';
             let labels, data, label, title;
             if (isTotal) {
                 const sessions = appData.history.slice().reverse();
@@ -2395,12 +2399,15 @@
             } else {
                 const sessions = appData.history.slice().reverse().map(h => {
                     const done = (h.exercises || []).find(e => e.name === sel.value);
-                    const weights = done ? (done.sets || []).filter(s => s.completed).map(s => s.weight) : [];
-                    return weights.length ? { date: h.date, top: Math.max(...weights) } : null;
+                    const sets = (done?.sets || []).filter(set => set.completed);
+                    const values = isBodyweightPullUp
+                        ? sets.filter(set => set.weight === 0 && Number.isFinite(set.reps) && set.reps > 0).map(set => set.reps)
+                        : sets.map(set => set.weight);
+                    return values.length ? { date: h.date, top: Math.max(...values) } : null;
                 }).filter(Boolean);
                 labels = sessions.map(s => new Date(s.date).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }));
                 data = sessions.map(s => s.top);
-                label = 'Carico massimo (kg)';
+                label = isBodyweightPullUp ? 'Ripetizioni massime in una serie' : 'Carico massimo (kg)';
                 title = sessions.length ? { display: false } : { display: true, text: 'Nessuna sessione con questo esercizio', color: textColor, font: { size: 11 } };
             }
 
@@ -2423,11 +2430,16 @@
                     plugins: {
                         legend: { display: false },
                         title: title,
-                        tooltip: { callbacks: { label: (c) => `${c.parsed.y} kg` } }
+                        tooltip: { callbacks: { label: (c) => `${c.parsed.y} ${unit}` } }
                     },
                     scales: {
                         x: { grid: { color: gridColor }, ticks: { color: textColor, font: { size: 10 } } },
-                        y: { beginAtZero: isTotal, grid: { color: gridColor }, ticks: { color: textColor, font: { size: 10 } } }
+                        y: {
+                            beginAtZero: isTotal,
+                            title: { display: true, text: label, color: textColor },
+                            grid: { color: gridColor },
+                            ticks: { color: textColor, font: { size: 10 }, precision: isBodyweightPullUp ? 0 : undefined }
+                        }
                     }
                 }
             });
