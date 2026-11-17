@@ -2385,62 +2385,81 @@
             const sel = document.getElementById('stats-exercise-select');
             const isTotal = !sel || sel.value === TOTAL_KEY;
 
-            const exerciseName = sel?.value || '';
-            const isBodyweightPullUp = /\bpull[\s-]*ups?\b/i.test(exerciseName) &&
-                !/zavorr|weighted/i.test(exerciseName);
-            const unit = isBodyweightPullUp ? 'rip.' : 'kg';
-            let labels, data, label, title;
-            if (isTotal) {
-                const sessions = appData.history.slice().reverse();
-                labels = sessions.map(h => new Date(h.date).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }));
-                data = sessions.map(h => roundKg(h.totalVolume));
-                label = 'Peso totale (kg)';
-                title = sessions.length ? { display: false } : { display: true, text: 'Nessuna sessione salvata', color: textColor, font: { size: 11 } };
-            } else {
-                const sessions = appData.history.slice().reverse().map(h => {
-                    const done = (h.exercises || []).find(e => e.name === sel.value);
-                    const sets = (done?.sets || []).filter(set => set.completed);
-                    const values = isBodyweightPullUp
-                        ? sets.filter(set => set.weight === 0 && Number.isFinite(set.reps) && set.reps > 0).map(set => set.reps)
-                        : sets.map(set => set.weight);
-                    return values.length ? { date: h.date, top: Math.max(...values) } : null;
-                }).filter(Boolean);
-                labels = sessions.map(s => new Date(s.date).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }));
-                data = sessions.map(s => s.top);
-                label = isBodyweightPullUp ? 'Ripetizioni massime in una serie' : 'Carico massimo (kg)';
-                title = sessions.length ? { display: false } : { display: true, text: 'Nessuna sessione con questo esercizio', color: textColor, font: { size: 11 } };
-            }
+            const metrics = {
+                load: { label: isTotal ? 'Volume totale (kg)' : 'Carico massimo (kg)', unit: 'kg', color: `rgb(${accent})` },
+                reps: { label: 'Ripetizioni massime a corpo libero', unit: 'rip.', color: isDark ? '#7dd3fc' : '#0369a1' },
+                seconds: { label: 'Tenuta più lunga', unit: 's', color: isDark ? '#fcd34d' : '#92400e' }
+            };
+            const exerciseName = sel?.value;
+            const isIsometric = /\biso\b/i.test(exerciseName || '');
+            const exerciseIds = new Set(appData.routines.flatMap(r => r.exercises)
+                .filter(exercise => exercise.name === exerciseName).map(exercise => exercise.id));
+
+            const sessions = appData.history.slice().reverse().map(session => {
+                if (isTotal) return { date: session.date, load: roundKg(session.totalVolume) };
+                const result = { date: session.date };
+                for (const exercise of session.exercises || []) {
+                    if (exercise.name !== exerciseName && !exerciseIds.has(exercise.exId)) continue;
+                    for (const set of exercise.sets || []) {
+                        if (!set.completed) continue;
+                        const weight = set.weight == null || String(set.weight).trim() === '' ? NaN : Number(set.weight);
+                        const metric = isIsometric ? 'seconds' : weight === 0 ? 'reps' : 'load';
+                        // Le sessioni a tempo più vecchie registravano la durata in reps.
+                        const seconds = set.sec === undefined && sessionUnit(exercise) === 'sec' ? set.reps : set.sec;
+                        const value = metric === 'load' ? weight : Number(metric === 'seconds' ? seconds : set.reps);
+                        if (!Number.isFinite(value) || (metric !== 'load' && value <= 0)) continue;
+                        result[metric] = Math.max(result[metric] ?? -Infinity, value);
+                    }
+                }
+                return result;
+            }).filter(session => Object.keys(metrics).some(metric => session[metric] !== undefined));
+
+            const shown = Object.entries(metrics).filter(([metric]) =>
+                sessions.some(session => session[metric] !== undefined));
+            const datasets = shown.map(([metric, style]) => ({
+                label: style.label,
+                data: sessions.map(session => session[metric] ?? null),
+                yAxisID: metric,
+                borderColor: style.color,
+                backgroundColor: style.color,
+                spanGaps: true,
+                tension: 0
+            }));
+            const scales = {
+                x: { grid: { color: gridColor }, ticks: { color: textColor, font: { size: 10 } } }
+            };
+            shown.forEach(([metric, style], index) => {
+                scales[metric] = {
+                    position: index === 0 ? 'left' : 'right',
+                    beginAtZero: isTotal,
+                    title: { display: true, text: style.unit, color: style.color },
+                    grid: { color: gridColor, drawOnChartArea: index === 0 },
+                    ticks: { color: style.color, font: { size: 10 }, precision: metric === 'reps' ? 0 : undefined }
+                };
+            });
 
             activeExerciseChart = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: labels,
-                    datasets: [{
-                        label: label,
-                        data: data,
-                        borderColor: `rgb(${accent})`,
-                        backgroundColor: `rgba(${accent},0.15)`,
-                        fill: true,
-                        tension: 0
-                    }]
+                    labels: sessions.map(session => new Date(session.date).toLocaleDateString('it-IT',
+                        { day: 'numeric', month: 'short' })),
+                    datasets
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
-                        legend: { display: false },
-                        title: title,
-                        tooltip: { callbacks: { label: (c) => `${c.parsed.y} ${unit}` } }
+                        legend: { display: shown.length > 1 },
+                        title: {
+                            display: shown.length <= 1,
+                            text: shown.length ? shown[0][1].label :
+                                isTotal ? 'Nessuna sessione salvata' : 'Nessuna serie completata per questo esercizio',
+                            color: textColor,
+                            font: { size: 11 }
+                        },
+                        tooltip: { callbacks: { label: c => `${c.parsed.y} ${metrics[c.dataset.yAxisID].unit}` } }
                     },
-                    scales: {
-                        x: { grid: { color: gridColor }, ticks: { color: textColor, font: { size: 10 } } },
-                        y: {
-                            beginAtZero: isTotal,
-                            title: { display: true, text: label, color: textColor },
-                            grid: { color: gridColor },
-                            ticks: { color: textColor, font: { size: 10 }, precision: isBodyweightPullUp ? 0 : undefined }
-                        }
-                    }
+                    scales
                 }
             });
         }
